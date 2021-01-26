@@ -1,6 +1,8 @@
 # wpdock
 A simple WordPress development environment using Docker
 
+![WPDock](https://wpgitupdater.dev/storage/uploads/wpdock.jpg)
+
 ## Install
 
 Download and place the `wpdock` executable in your path, the following command places `wpdock` into the `$HOME/bin` folder:
