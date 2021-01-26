@@ -1,0 +1,287 @@
+#!/bin/bash
+
+RED='\033[0;31m'
+NC='\033[0m'
+
+read -r -d '' ENV_CONTENT << CONTENT
+COMPOSE_PROJECT_NAME=wordpress
+
+WORDPRESS_SITE_HOST=wordpress.wpdock
+
+WORDPRESS_PORT=8080
+PMA_PORT=8181
+MAILHOG_PORT=8282
+MYSQL_PORT=33060
+
+WORDPRESS_SITE_TITLE="WP Dock Environment"
+WORDPRESS_ADMIN_USERNAME=test
+WORDPRESS_ADMIN_EMAIL=test@example.com
+WORDPRESS_ADMIN_PASSWORD=test
+
+WORDPRESS_IMAGE=wordpress:latest
+WORDPRESS_CLI_IMAGE=wordpress:cli
+MYSQL_IMAGE=mysql:5.7
+
+WORDPRESS_DB_HOST=db:3306
+WORDPRESS_DB_NAME=wordpress
+WORDPRESS_DB_USER=wordpress
+WORDPRESS_DB_PASSWORD=wordpress
+WORDPRESS_TABLE_PREFIX=wp_
+WORDPRESS_DEBUG=true
+
+MYSQL_ROOT_PASSWORD=password
+MYSQL_USER=wordpress
+MYSQL_PASSWORD=wordpress
+MYSQL_DATABASE=wordpress
+CONTENT
+
+read -r -d '' COMPOSE_CONTENT << CONTENT
+version: "3.3"
+services:
+  wordpress:
+    image: \${WORDPRESS_IMAGE:-wordpress:latest}
+    container_name: \${COMPOSE_PROJECT_NAME:-wordpress}_wordpress
+    restart: always
+    depends_on:
+      - db
+    env_file: .env
+    ports:
+      - \${WORDPRESS_PORT:-8080}:80
+    volumes:
+      - wp:/var/www/html
+      - ./:/var/www/html/wp-content
+    extra_hosts:
+      - \${WORDPRESS_SITE_HOST:-wordpress.wpdock}:172.17.0.1
+  install:
+    image: \${WORDPRESS_CLI_IMAGE:-wordpress:cli}
+    container_name: \${COMPOSE_PROJECT_NAME:-wordpress}_install
+    restart: on-failure
+    user: "33:33"
+    depends_on:
+      - db
+      - wordpress
+    env_file: .env
+    volumes:
+      - wp:/var/www/html
+    working_dir: /var/www/html
+    command: wp core install --url="localhost:\${WORDPRESS_PORT:-8080}" --title="\${WORDPRESS_SITE_TITLE:-"WP Dock Environment"}" --admin_user=\${WORDPRESS_ADMIN_USERNAME:-test} --admin_password=\${WORDPRESS_ADMIN_PASSWORD:-test} --admin_email=\${WORDPRESS_ADMIN_EMAIL:-test@example.com}
+  cli:
+    image: \${WORDPRESS_CLI_IMAGE:-wordpress:cli}
+    container_name: \${COMPOSE_PROJECT_NAME:-wordpress}_cli
+    user: "33:33"
+    depends_on:
+      - db
+      - wordpress
+    env_file: .env
+    volumes:
+      - wp:/var/www/html
+      - ./:/var/www/html/wp-content
+    working_dir: /var/www/html
+    command: wp --info
+  db:
+    image: \${MYSQL_IMAGE:-mysql:5.7}
+    container_name: \${COMPOSE_PROJECT_NAME:-wordpress}_db
+    restart: always
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    env_file: .env
+    ports:
+      - \${MYSQL_PORT:-33060}:3306
+    volumes:
+      - db:/var/lib/mysql
+  phpmyadmin:
+    image: phpmyadmin:latest
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - \${PMA_PORT:-8181}:80
+    environment:
+      - PMA_USER=root
+      - PMA_PASSWORD=\${MYSQL_ROOT_PASSWORD}
+  mailhog:
+    container_name: \${COMPOSE_PROJECT_NAME:-wordpress}_mailhog
+    image: mailhog/mailhog
+    ports:
+      - \${MAILHOG_PORT:-8282}:8025
+      - 10255:1025
+  caddy:
+    container_name: \${COMPOSE_PROJECT_NAME:-wordpress}_caddy
+    image: caddy:latest
+    volumes:
+      - ./.wpdock/certs:/root/certs
+      - ./.wpdock/Caddyfile:/etc/caddy/Caddyfile
+    ports:
+      - 80:80
+      - 443:443
+    depends_on:
+     - wordpress
+volumes:
+  wp:
+  db:
+CONTENT
+
+if [[ -f ".env" ]]; then
+  source .env
+fi
+
+composefile="$HOME/.wpdock-docker-compose.v1.yml"
+
+case $1 in
+
+  help|--help)
+    echo -e "\n\n"
+    echo -e "Available Commands:"
+    echo -e "\n\ninit\n\nCreates '.env' file in the current folder when not present.\nAdds 'db.sql' and '.wpdock' to '.gitignore', and '.htaccess' rules to prevent dot files being accessed."
+    echo -e "\n\nfile [name](.env)\n\nDisplays the contents of the generated files should you prefer a manual installation."
+    echo -e "\n\nup|start --https\n\nRuns 'docker-compose up -d' and applies $(basename $0) specific configurations. When --https is provided a caddy server is used to proxy requests from your WORDPRESS_SITE_HOST env to the wordpress container."
+    echo -e "\n\nstop\n\nRuns 'docker-compose stop'."
+    echo -e "\n\ndown\n\nRuns 'docker-compose down'."
+    echo -e "\n\ndestroy\n\nRuns 'docker-compose down -v' Removing volumes."
+    echo -e "\n\nexec [name] ...\n\nProxies commands to the named container using 'docker-compose exec name ...'.\nFor example: "$(basename $0)" exec wordpress sh opens a session on the wordpress container."
+    echo -e "\n\nrun [name] ...\n\nProxies commands to the named container using 'docker-compose run name ...'.\nFor example: "$(basename $0)" run wordpress sh opens a session on a new copy of the wordpress container."
+    echo -e "\n\nlogs [name]\n\nTails container logs. When no name is provided output contains all running containers."
+    echo -e "\n\ncompose ...\n\nProxies commands directly to docker-compose."
+    echo -e "\n\ndump\n\nExports the database to 'dump.sql' using wp db export and the database root user."
+    echo -e "\n\nimport\n\nImports the database from the 'dump.sql' file."
+    echo -e "\n\n...\n\nProxies commands to the wpcli container 'docker-compose run --rm cli wp ...'.\nFor example: "$(basename $0)" user list >> wpcli user list"
+    echo -e "\n\n"
+  ;;
+
+  init)
+    if [[ -f ".env" ]]; then
+      echo -e "$RED** .env already exists **$NC\n"
+      echo -e "Review the contents of the 'file .env' command\n\n"
+    else
+      echo -e "Creating .env file.\n\n"
+      echo "$ENV_CONTENT" > ".env"
+    fi
+
+    if ! [[ -f ".gitignore" ]] || ! grep -q "db.sql" ".gitignore"; then
+      echo -e "Adding db.sql to .gitignore file.\n\n"
+      echo "db.sql" >> ".gitignore"
+    fi
+
+    if ! [[ -f ".gitignore" ]] || ! grep -q ".wpdock" ".gitignore"; then
+      echo -e "Adding .wpdock to .gitignore file.\n\n"
+      echo ".wpdock" >> ".gitignore"
+    fi
+
+    if ! [[ -f ".htaccess" ]] || ! grep -q "<FilesMatch \"^\\\.\">" ".htaccess"; then
+      echo -e "Adding dot file access prevention to .htaccess file.\n\n"
+      echo -e "<FilesMatch \"^\.\">\nOrder allow,deny\nDeny from all\n</FilesMatch>" >> ".htaccess"
+    else
+      echo -e "Dot file access prevention already added to .htaccess file.\n\n"
+    fi
+  ;;
+
+  file)
+    if [[ "$2" == ".env" ]]; then
+      printf "$ENV_CONTENT"
+    fi
+  ;;
+
+  up|start)
+    echo "$COMPOSE_CONTENT" > $composefile
+
+    echo "Starting services..."
+    $(docker-compose -f $composefile --project-directory $PWD up -d install mailhog phpmyadmin) || exit $?
+
+    echo "Updating mailhog configuration..."
+    docker-compose -f $composefile --project-directory $PWD exec wordpress bash -c "
+      if ! [[ -f /usr/local/bin/mhsendmail ]]; then
+        curl --location --output /usr/local/bin/mhsendmail https://github.com/mailhog/mhsendmail/releases/download/v0.2.0/mhsendmail_linux_amd64
+        chmod +x /usr/local/bin/mhsendmail
+        echo 'sendmail_path=\"/usr/local/bin/mhsendmail --smtp-addr=mailhog:1025\"' >> /usr/local/etc/php/conf.d/mailhog.ini
+        echo 'sendmail_from=\"${WORDPRESS_ADMIN_EMAIL:-noreply@wpdock.local}\"' >> /usr/local/etc/php/conf.d/mailhog.ini
+        service apache2 restart
+      fi
+    "
+
+    if [[ "$2" == "--https" ]]; then
+      host="${WORDPRESS_SITE_HOST:-${COMPOSE_PROJECT_NAME:-wordpress}.wpdock}"
+
+      mkdir -p ".wpdock/certs"
+      touch ".wpdock/Caddyfile"
+
+      if ! [[ -f ".wpdock/certs/$host.pem" ]]; then
+        echo "Generating certificates..."
+        mkcert --cert-file=.wpdock/certs/$host.pem --key-file=.wpdock/certs/$host-key.pem $host
+      fi
+
+      echo "Updating Caddyfile..."
+      echo -e "$host {\n\ttls /root/certs/$host.pem /root/certs/$host-key.pem\n\treverse_proxy wordpress:80\n}" > ".wpdock/Caddyfile"
+
+      echo "Starting Caddy Proxy Container..."
+      $(docker-compose -f $composefile --project-directory $PWD up -d caddy) || exit $?
+
+      if ! grep -q "$host" "/etc/hosts"; then
+        echo -e "\n\n$host doesnt appear in your hosts file, you may need to add it:"
+        echo "127.0.0.1  $host"
+      fi
+
+      for i in {1..10}; do
+        docker-compose -f $composefile --project-directory $PWD run --rm cli wp option update home "https://$host" 2> /dev/null && break || sleep $i
+      done
+      docker-compose -f $composefile --project-directory $PWD run --rm cli wp option update siteurl "https://$host"
+      docker-compose -f $composefile --project-directory $PWD run --rm cli wp search-replace "http://localhost:${WORDPRESS_PORT:-8080}" "https://$host" --skip-columns=guid
+
+      echo -e "\n\nWordPress: http://localhost:${WORDPRESS_PORT:-8080} | https://$host"
+    else
+      echo -e "\n\nWordPress: http://localhost:${WORDPRESS_PORT:-8080}"
+    fi
+
+    echo "PHPMyAdmin: http://localhost:${PMA_PORT:-8181}"
+    echo "Mailhog: http://localhost:${MAILHOG_PORT:-8282}"
+    echo "MySQL: localhost:${MYSQL_PORT:-33060}"
+  ;;
+
+  stop)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD stop
+  ;;
+
+  down)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD down
+  ;;
+
+  destroy)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD down -v
+  ;;
+
+  exec)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD exec ${@:2}
+  ;;
+
+  run)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD run --rm ${@:2}
+  ;;
+
+  logs)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD logs -f ${@:2}
+  ;;
+
+  compose)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD ${@:2}
+  ;;
+
+  dump)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD run --rm cli /bin/sh -c "wp db export 'wp-content/dump.sql' --dbuser=root --dbpass=\$MYSQL_ROOT_PASSWORD"
+  ;;
+
+  import)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD run --rm cli wp db import 'wp-content/dump.sql'
+  ;;
+
+  *)
+    echo "$COMPOSE_CONTENT" > $composefile
+    docker-compose -f $composefile --project-directory $PWD run --rm cli wp ${@:1}
+  ;;
+esac
