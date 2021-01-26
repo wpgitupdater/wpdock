@@ -1,5 +1,7 @@
 # wpdock
-A simple WordPress development environment using Docker
+A simple WordPress development environment using Docker.
+
+Checkout our introductory [blog post](https://wpgitupdater.dev/blog/wp-dock-a-simple-word-press-development-environment-using-docker).
 
 ![WPDock](https://wpgitupdater.dev/storage/uploads/wpdock.jpg)
 
